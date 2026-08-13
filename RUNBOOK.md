@@ -15,6 +15,15 @@ Set:
 - `EVAL_LLM_MODEL=private-large`
 - `VESPA_QUERY_URL`
 
+`VESPA_QUERY_URL` is machine-specific. For the current Docker-style setup where
+host port `18081` maps to Vespa query port `8081`, use:
+
+```bash
+VESPA_QUERY_URL=http://localhost:18081/search/
+```
+
+Read `SETUP_INSTRUCTIONS.md` before the first run on a new machine.
+
 Put the merged training CSV here:
 
 ```text
@@ -71,6 +80,7 @@ python3 scripts/eval-question-gen/prepare_kimi_eval_assignments.py \
 ```
 
 This hydrates only selected assignment chunks from Vespa.
+The default Kimi instructions are `KIMI_EVAL_AGENT_INSTRUCTIONS_V3.md`.
 
 ## 5. Run Hands-Free Supervisor
 
@@ -82,6 +92,21 @@ python3 scripts/eval-question-gen/run_eval_supervisor.py run \
   --target-rows 200 \
   --max-active-agents 3 \
   --llm-model private-large
+```
+
+If supported/distinct rows are blocked only by `difficulty_too_low` and you
+intentionally want easier recall evals, use the lower-difficulty judge policy:
+
+```bash
+python3 scripts/eval-question-gen/run_eval_supervisor.py run \
+  --input data/training_questions.csv \
+  --run-dir runs/<run_id> \
+  --assignment-root assignments/<assignment_run> \
+  --target-rows 200 \
+  --max-active-agents 3 \
+  --llm-model private-large \
+  --judge-system-prompt scripts/eval-question-gen/JUDGE_SYSTEM_PROMPT_EASY_OK.md \
+  --judge-min-difficulty easy
 ```
 
 Check status:

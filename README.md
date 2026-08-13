@@ -36,9 +36,11 @@ scripts/eval-question-gen/       # pipeline code and prompts
 
 ## Quick Start
 
-1. Copy `.env.example` to `.env` and fill in local values.
-2. Place your merged training CSV at `data/training_questions.csv`.
-3. Run the workflow in the order shown in `RUNBOOK.md`.
+1. Read `SETUP_INSTRUCTIONS.md`.
+2. Copy `.env.example` to `.env` and fill in local values.
+   `VESPA_QUERY_URL` is machine-specific; verify it before hydrating chunks.
+3. Place your merged training CSV at `data/training_questions.csv`.
+4. Run the workflow in the order shown in `RUNBOOK.md`.
 
 The normal hands-free path is:
 

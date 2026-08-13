@@ -27,6 +27,8 @@ from llm_client import (
 
 JUDGE_VERSION = "cluster_local_v2_run_dedupe"
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+DIFFICULTY_RANK = {"easy": 0, "medium": 1, "hard": 2}
+DEFAULT_MIN_DIFFICULTY = "medium"
 
 MAX_JUDGE_ROW_ATTEMPTS = 3
 MAX_JUDGE_TOKENS_CEILING = 8000
@@ -44,10 +46,20 @@ Return only JSON:
   "distinctness": "distinct|too_similar",
   "citation_quality": "sufficient|insufficient|over_cited",
   "eval_quality": "useful|weak|unfair",
+  "difficulty": "easy|medium|hard",
   "supporting_chunk_ids": ["chunk-id"],
   "too_similar_refs": [],
   "reason": "one short reason"
 }
+
+Difficulty scoring:
+- easy: the question asks for a plainly stated fact, date, name, amount,
+  section number, case citation, or single-sentence extraction.
+- medium: the question requires connecting two facts, applying a stated rule
+  or condition, comparing two positions, or explaining a stated rationale.
+- hard: the question requires synthesizing multiple parts of the chunks,
+  tracing reasoning, resolving an apparent tension, or drawing a non-obvious
+  inference that is explicitly grounded in the text.
 
 Before choosing the verdict, internally check the answer's key factual/legal
 claims against the cited chunks. Do not output a claim-by-claim proof. Keep the
@@ -56,9 +68,9 @@ JSON compact and do not wrap it in markdown fences.
 Accept only if the answer is fully supported by the cited chunks, the cited
 chunks are sufficient without obvious over-citation, the question is
 meaningfully different from related training rows and same-run previous
-questions, and the row is useful as an eval item. Reject cosmetic rewrites,
-unsupported answers, questions needing unseen context, unfair traps, and
-boilerplate rows.
+questions, the row is useful as an eval item, and the difficulty is at least
+medium. Reject cosmetic rewrites, unsupported answers, questions needing unseen
+context, unfair traps, boilerplate rows, and easy single-fact lookups.
 """
 
 
@@ -438,7 +450,12 @@ def normalize_judge(parsed: Any) -> dict[str, Any]:
     }
 
 
-def judge_gate_reasons(judge: dict[str, Any], *, cited_chunk_ids: list[str]) -> list[str]:
+def judge_gate_reasons(
+    judge: dict[str, Any],
+    *,
+    cited_chunk_ids: list[str],
+    min_difficulty: str = DEFAULT_MIN_DIFFICULTY,
+) -> list[str]:
     reasons: list[str] = []
     if judge["verdict"] != "accept":
         reasons.append("judge_verdict_reject")
@@ -450,7 +467,9 @@ def judge_gate_reasons(judge: dict[str, Any], *, cited_chunk_ids: list[str]) -> 
         reasons.append(f"citation_{judge['citation_quality'] or 'invalid'}")
     if judge["eval_quality"] != "useful":
         reasons.append(f"eval_quality_{judge['eval_quality'] or 'invalid'}")
-    if judge.get("difficulty") not in {"medium", "hard"}:
+    minimum_rank = DIFFICULTY_RANK.get(min_difficulty, DIFFICULTY_RANK[DEFAULT_MIN_DIFFICULTY])
+    candidate_rank = DIFFICULTY_RANK.get(str(judge.get("difficulty") or ""), -1)
+    if candidate_rank < minimum_rank:
         reasons.append("difficulty_too_low")
 
     cited = set(cited_chunk_ids)
@@ -462,8 +481,17 @@ def judge_gate_reasons(judge: dict[str, Any], *, cited_chunk_ids: list[str]) -> 
     return reasons
 
 
-def judge_passes(judge: dict[str, Any], *, cited_chunk_ids: list[str]) -> bool:
-    return not judge_gate_reasons(judge, cited_chunk_ids=cited_chunk_ids)
+def judge_passes(
+    judge: dict[str, Any],
+    *,
+    cited_chunk_ids: list[str],
+    min_difficulty: str = DEFAULT_MIN_DIFFICULTY,
+) -> bool:
+    return not judge_gate_reasons(
+        judge,
+        cited_chunk_ids=cited_chunk_ids,
+        min_difficulty=min_difficulty,
+    )
 
 
 def judge_one(
@@ -477,6 +505,7 @@ def judge_one(
     temperature: float,
     max_tokens: int,
     system_prompt: str,
+    min_difficulty: str,
 ) -> dict[str, Any]:
     packet, preflight_reject = build_packet(
         record,
@@ -503,7 +532,11 @@ def judge_one(
             )
             judge = normalize_judge(result.get("parsed"))
             cited_chunk_ids = normalize_string_list(record.get("chunk_ids"))
-            gate_reasons = judge_gate_reasons(judge, cited_chunk_ids=cited_chunk_ids)
+            gate_reasons = judge_gate_reasons(
+                judge,
+                cited_chunk_ids=cited_chunk_ids,
+                min_difficulty=min_difficulty,
+            )
             status = "accept" if not gate_reasons else "reject"
             reject_reason = "" if status == "accept" else gate_reasons[0]
             return {
@@ -580,6 +613,7 @@ def run_judge(args: argparse.Namespace) -> dict[str, Any]:
             "selected_assignment_count": len(cards),
             "sample_packet_count": len(packets),
             "preflight_rejection_count": len(preflight_rejections),
+            "min_difficulty": args.min_difficulty,
             "sample_packets": packets,
             "sample_preflight_rejections": preflight_rejections[:5],
         }
@@ -604,6 +638,7 @@ def run_judge(args: argparse.Namespace) -> dict[str, Any]:
                         temperature=args.temperature,
                         max_tokens=args.max_tokens,
                         system_prompt=system_prompt,
+                        min_difficulty=args.min_difficulty,
                     )
                 )
             except Exception as exc:
@@ -628,6 +663,7 @@ def run_judge(args: argparse.Namespace) -> dict[str, Any]:
                     temperature=args.temperature,
                     max_tokens=args.max_tokens,
                     system_prompt=system_prompt,
+                    min_difficulty=args.min_difficulty,
                 ): record
                 for record in candidates
             }
@@ -675,6 +711,7 @@ def run_judge(args: argparse.Namespace) -> dict[str, Any]:
             "max_tokens": args.max_tokens,
             "timeout_seconds": llm_config.timeout_seconds,
             "retries": llm_config.retries,
+            "min_difficulty": args.min_difficulty,
         },
         "reject_reason_counts": dict(
             Counter((record.get("judge") or {}).get("reject_reason") or "none" for record in rejected)
@@ -714,6 +751,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-run-previous-questions", type=int, default=5)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=700)
+    parser.add_argument("--min-difficulty", choices=sorted(DIFFICULTY_RANK), default=DEFAULT_MIN_DIFFICULTY)
     parser.add_argument("--system-prompt", type=Path, default=None, help="Path to a markdown file overriding the default judge system prompt.")
     parser.add_argument("--sample-packets", type=int, default=3)
     parser.add_argument("--dry-run", action="store_true")

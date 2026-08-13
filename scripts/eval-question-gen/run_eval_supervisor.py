@@ -637,6 +637,8 @@ def start_judge(card: dict[str, Any], args: argparse.Namespace, state: dict[str,
         str(args.judge_llm_timeout_seconds),
         "--llm-retries",
         str(args.judge_llm_retries),
+        "--min-difficulty",
+        args.judge_min_difficulty,
     ]
     if getattr(args, "judge_system_prompt", None) is not None:
         command.extend(["--system-prompt", str(args.judge_system_prompt)])
@@ -985,6 +987,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--judge-max-tokens", type=int, default=2000)
     run_parser.add_argument("--judge-llm-timeout-seconds", type=int, default=180)
     run_parser.add_argument("--judge-llm-retries", type=int, default=2)
+    run_parser.add_argument("--judge-min-difficulty", choices=["easy", "medium", "hard"], default="medium")
     run_parser.add_argument("--judge-system-prompt", type=Path, default=None, help="Path to a markdown file overriding the default judge system prompt.")
     run_parser.add_argument("--similarity-threshold", type=float, default=0.85)
     run_parser.add_argument("--eval-bank-path", type=Path, default=DEFAULT_EVAL_BANK)
