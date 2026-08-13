@@ -3,6 +3,12 @@
 This repo is standalone code, but it still needs local runtime services and
 local input files. Nothing sensitive or large should be committed.
 
+All commands below assume you are running from this repository root:
+
+```bash
+cd "/path/to/Eval Question Gen"
+```
+
 ## Required Local Inputs
 
 - Training CSV: put the merged training set at `data/training_questions.csv`,
@@ -12,6 +18,29 @@ local input files. Nothing sensitive or large should be committed.
   endpoint. This is a URL, not a repo path, and it may differ by machine.
 - LiteLLM/OpenAI-compatible endpoint: must expose `private-large`.
 - `opencode` CLI: must be available on `PATH`.
+
+The training CSV must contain these columns:
+
+```csv
+question,answer,docIds,chunk_ids,pipeline,source_row_number,is_exact_duplicate,duplicate_of_row
+```
+
+The final eval CSV intentionally contains only:
+
+```csv
+question,answer,docIds,chunk_ids,pipeline
+```
+
+Do not commit local runtime data or secrets:
+
+```text
+.env
+data/
+runs/
+assignments/
+bookkeeping/
+deltas/
+```
 
 ## `.env` Values
 
@@ -45,6 +74,40 @@ A healthy endpoint returns HTTP 200 and either a hit or an empty result. HTTP
 Vespa content backend behind it is not healthy. Pick the correct port or fix
 the Vespa service before running assignment preparation.
 
+## Preflight Checks
+
+Check Python:
+
+```bash
+python3 --version
+python3 -m py_compile scripts/eval-question-gen/*.py
+```
+
+Check OpenCode:
+
+```bash
+command -v opencode
+opencode --help
+```
+
+Check the LiteLLM/private-large endpoint:
+
+```bash
+curl -sS "$LITELLM_BASE_URL/chat/completions" \
+  -H "Authorization: Bearer $LITELLM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "private-large",
+    "messages": [{"role": "user", "content": "Reply with OK."}],
+    "max_tokens": 8
+  }'
+```
+
+If your local LiteLLM base URL already includes `/v1`, use
+`$LITELLM_BASE_URL/chat/completions`. If it does not, this repo's Python judge
+client handles that automatically for judge calls, but the manual `curl` should
+target the actual chat-completions URL exposed by your local service.
+
 ## Normal Run
 
 ```bash
@@ -69,6 +132,19 @@ The final export, when enough rows pass the judge, is:
 
 ```text
 runs/<run_id>/eval_seen_chunks.csv
+```
+
+Common output locations:
+
+```text
+runs/<run_id>/clusters.jsonl
+runs/<run_id>/cluster_summary.json
+assignments/<assignment_run>/selected_assignments.jsonl
+assignments/<assignment_run>/assignment_summary.json
+runs/<run_id>/supervisor/status.md
+runs/<run_id>/judge_summary.json
+runs/<run_id>/eval_seen_chunks.csv
+bookkeeping/eval_bank.jsonl
 ```
 
 Export fails closed unless compatible judge outputs exist. It reads only
@@ -179,3 +255,16 @@ After supervisor:
 - `validation_ok_count` shows deterministic schema/evidence checks passed.
 - `judge_accepted_count` controls whether export can happen.
 - `export_summary.json` appears only after accepted judge rows are exported.
+
+## Troubleshooting
+
+| Symptom | Likely cause | What to do |
+| --- | --- | --- |
+| Vespa query returns HTTP 503 with backend communication error | Wrong Vespa port or unhealthy content node | Verify `VESPA_QUERY_URL`; check Docker port mapping; use the healthy query port. |
+| `assignment_summary.json` has `selected_assignment_count: 0` | Hydration failed or filters are too strict | Check `assignment_hydration.status_counts`; confirm Vespa has the cited docs; lower `--min-chunks` only if intentional. |
+| `hydration_rejected_assignment_count` is high | Chunks were missing or Vespa fetch failed | Inspect `assignment_hydration.jsonl` and fix the endpoint/service before generation. |
+| Kimi workers are slow | `private-large` or OpenCode latency | Increase `--max-active-agents`, keep timeouts realistic, and compare against the original pipeline with the same model/concurrency. |
+| Kimi worker exits with timeout | OpenCode/model call timed out | Let the supervisor retry, or raise `--worker-timeout-seconds` if the model is consistently slow. |
+| `validation_ok_count` is lower than `generated_count` | Kimi produced malformed rows or cited invalid chunks | Inspect assignment validation summaries and generation logs. |
+| `judge_accepted_count` is zero but rows are supported | Judge difficulty gate may be too strict for this eval target | Prefer stronger Kimi instructions first; if easy recall rows are acceptable, use `JUDGE_SYSTEM_PROMPT_EASY_OK.md` with `--judge-min-difficulty easy`. |
+| Export does not appear | No judge-accepted rows yet, or judge outputs are missing/incompatible | Check `judge_summary.json`; export intentionally fails closed. |
